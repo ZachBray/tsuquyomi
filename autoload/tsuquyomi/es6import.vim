@@ -98,8 +98,8 @@ function! tsuquyomi#es6import#createImportBlock(text)
     if has_key(nav, 'containerKind') && nav.containerKind ==# 'module'
       if tsuquyomi#es6import#checkExternalModule(nav.containerName, nav.file, 0)
         let l:importDict = {
-              \ 'identifier': nav.name,
               \ 'path': nav.containerName,
+              \ 'identifier': nav.name,
               \ 'nav': nav
               \ }
         call add(l:result_list, l:importDict)
@@ -117,8 +117,8 @@ function! tsuquyomi#es6import#createImportBlock(text)
         let l:path = l:relative_path
       endif
       let l:importDict = {
-            \ 'identifier': nav.name,
             \ 'path': l:path,
+            \ 'identifier': nav.name,
             \ 'nav': nav
             \ }
       call add(l:result_list, l:importDict)
@@ -277,7 +277,7 @@ function! tsuquyomi#es6import#getImportDeclarations(fileName, content_list)
       let l:from_offset = match(l:line_str, 'from')
       if l:brace_end_offset + 1 && !l:has_brace && !l:has_from
         let l:has_brace = 1
-        let l:brace = { 
+        let l:brace = {
               \ 'end': { 'offset': l:brace_end_offset + 1, 'line': l:line }
               \ }
       endif
@@ -377,8 +377,9 @@ function! tsuquyomi#es6import#complete()
     return
   endif
   let [l:import_list, l:dec_position, l:reason] = tsuquyomi#es6import#getImportDeclarations(expand('%:p'), [])
+  let l:module_start_line = has_key(l:dec_position, 'start') ? l:dec_position.start.line : 0
   let l:module_end_line = has_key(l:dec_position, 'end') ? l:dec_position.end.line : 0
-  let l:same_path_import_list = filter(l:import_list, 'v:val.has_brace && v:val.module.name ==# l:block.path')
+  let l:same_path_import_list = filter(copy(l:import_list), 'v:val.has_brace && v:val.module.name ==# l:block.path')
   if len(l:same_path_import_list) && len(filter(copy(l:same_path_import_list), 'v:val.alias_info.text ==# l:block.identifier'))
     echohl Error
     echom '[Tsuquyomi] '.l:block.identifier.' is already imported.'
@@ -386,43 +387,51 @@ function! tsuquyomi#es6import#complete()
     return
   endif
 
-  "Replace search keyword to hit result identifer
-  let l:line = getline(l:identifier_info.start.line)
-  let l:new_line = l:block.identifier
-  if l:identifier_info.start.offset > 1
-    let l:new_line = l:line[0:l:identifier_info.start.offset - 2].l:new_line
-  endif
-  let l:new_line = l:new_line.l:line[l:identifier_info.end.offset: -1]
-  call setline(l:identifier_info.start.line, l:new_line)
-
   if g:tsuquyomi_import_curly_spacing == 0
     let l:curly_spacing = ''
   else
     let l:curly_spacing = ' '
   end
 
-  "Add import declaration
-  if !len(l:same_path_import_list)
-    if g:tsuquyomi_single_quote_import
-      let l:expression = "import {".l:curly_spacing.l:block.identifier.l:curly_spacing."} from '".l:block.path."';"
-    else
-      let l:expression = 'import {'.l:curly_spacing.l:block.identifier.l:curly_spacing.'} from "'.l:block.path.'";'
-    endif
-    call append(l:module_end_line, l:expression)
-  else
-    let l:target_import = l:same_path_import_list[0]
-    if l:target_import.is_oneliner
-      let l:line = getline(l:target_import.brace.end.line)
-      let l:injection_position = target_import.brace.end.offset - 2 - strlen(l:curly_spacing)
-      let l:expression = l:line[0:l:injection_position].', '.l:block.identifier.l:curly_spacing.l:line[l:target_import.brace.end.offset - 1: -1]
-      call setline(l:target_import.brace.end.line, l:expression)
-    else
-      let l:before_line = getline(l:target_import.brace.end.line - 1)
-      let l:indent = matchstr(l:before_line, '\m^\s*')
-      call setline(l:target_import.brace.end.line - 1, l:before_line.',')
-      call append(l:target_import.brace.end.line - 1, l:indent.l:block.identifier)
-    endif
-  endif
+  " call append(0, "//" . string(l:import_list))
+  " call append(0, "//" . string(l:same_path_import_list))
+  " Delete old declarations
+  let l:group_start_line = l:module_end_line + 1
+  let l:group_end_line = l:module_start_line
+  if len(l:same_path_import_list)
+    for target_import in l:same_path_import_list
+      let l:target_start_line = l:target_import.from_span.start.line
+      let l:target_end_line = l:target_import.from_span.end.line
+      if l:target_start_line < l:group_start_line
+        let l:group_start_line = l:target_start_line
+      end
+      if l:target_end_line > l:group_end_line
+        let l:group_end_line = l:target_end_line
+      end
+    endfor
+    let l:command = string(l:group_start_line) . "," . string(l:group_end_line) . "d"
+    execute l:command
+  end
+  let l:aliases = [l:block.identifier]
+  for import in l:same_path_import_list
+    call add(l:aliases, import.alias_info.text)
+  endfor
+  let l:needs_comma = 0
+  let l:expression = "import {" . l:curly_spacing
+  call sort(l:aliases)
+  for alias in l:aliases
+    if l:needs_comma == 1
+      let l:expression .= ", "
+    end
+    let l:expression .= alias
+    let l:needs_comma = 1
+  endfor
+  let l:quote = '"'
+  if g:tsuquyomi_single_quote_import
+    let l:quote = "'"
+  end
+  let l:expression .= l:curly_spacing."} from " . l:quote . l:block.path . l:quote . ";"
+  call append(l:group_start_line - 1, l:expression)
 endfunction
 
 let &cpo = s:save_cpo
